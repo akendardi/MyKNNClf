@@ -4,125 +4,62 @@ import pandas as pd
 
 
 class MyKNNClf:
-    def __init__(self, k: int = 0, metric: str = "euclidean", weight: str = "uniform"):
-        # Количество ближайших соседей
+    def __init__(self, k: int = 3, metric: str = "euclidean", weight: str = "uniform"):
         self.k = k
-        # Выбранная метрика расстояния
         self.metric = metric
-        # Схема взвешивания соседей
         self.weight = weight
-        # Размер обучающей выборки
-        self.train_size = None
-        # Матрица признаков обучающей выборки
         self.X = None
-        # Метки классов обучающей выборки
         self.y = None
 
-    def __str__(self):
-        # Строковое представление объекта
-        return f"MyKNNClf class: k={self.k}"
-
     def fit(self, X: pd.DataFrame, y: pd.Series):
-        # Сохраняем размер выборки
-        self.train_size = (X.shape[0], X.shape[1])
-        # Сохраняем признаки
-        self.X = X
-        # Сохраняем метки
-        self.y = y
+        self.X = X.copy()
+        self.y = y.copy()
+        if self.k <= 0 or self.k > len(self.X):
+            self.k = len(self.X)
 
-    def predict(self, X_test: pd.DataFrame):
-        # Список предсказаний
+    def predict(self, X: pd.DataFrame):
+        proba = self.predict_proba(X)
+        return (proba >= 0.5).astype(int)
+
+    def predict_proba(self, X: pd.DataFrame):
         predictions = []
-        for _, test in X_test.iterrows():
-            heap = []  # Куча для ближайших соседей
-            for train, label in zip(self.X.values, self.y.values):
-                distance = self._get_metric(test, train)
-                # Заполняем кучу до k элементов
-                if len(heap) < self.k:
-                    heapq.heappush(heap, (-distance, label))
-                else:
-                    # Заменяем, если найден ближе
-                    if distance < -heap[0][0]:
-                        heapq.heappop(heap)
-                        heapq.heappush(heap, (-distance, label))
-            # Определяем итоговый класс по весам
-            pred = self._predict_by_weight(heap)
-            predictions.append(1 if pred >= 0.5 else 0)
-        return np.array(predictions)
 
-    def _predict_by_weight(self, distances):
-        # Список меток соседей
-        labels = [label for _, label in distances]
-        # Равные веса
-        if self.weight == "uniform":
-            count_1 = labels.count(1)
-            return count_1 / len(labels)
-        # Веса по рангу
-        if self.weight == "rank":
-            sorted_neighbors = sorted(distances, key=lambda x: -x[0])
-            k = len(sorted_neighbors)
-            weight_1, weight_0 = 0, 0
-            for rank, (_, label) in enumerate(sorted_neighbors, start=1):
-                w = 1 / rank
-                if label == 1:
-                    weight_1 += w
-                else:
-                    weight_0 += w
-            return weight_1 / (weight_1 + weight_0)
-        # Веса по расстоянию
-        if self.weight == "distance":
-            score_0, score_1 = 0, 0
-            denom = 0
-            for neg_d, label in distances:
-                d = -neg_d
-                if d == 0:
-                    return label
-                w = 1 / d
-                denom += w
-                if label == 1:
-                    score_1 += w
-                else:
-                    score_0 += w
-            return score_1 / denom
+        for _, test in X.iterrows():
+            distances = np.array([self._get_metric(test.values, train.values)
+                                  for _, train in self.X.iterrows()])
 
-    def predict_proba(self, X_test: pd.DataFrame):
-        # Вероятности принадлежности к классу 1
-        predictions = []
-        for _, test in X_test.iterrows():
-            heap = []
-            for train, label in zip(self.X.values, self.y.values):
-                distance = self._get_metric(test, train)
-                if len(heap) < self.k:
-                    heapq.heappush(heap, (-distance, label))
+            nearest_idx = distances.argsort()[:self.k]
+            nearest_labels = self.y.iloc[nearest_idx].values
+            nearest_dist = distances[nearest_idx]
+
+            pred = None
+            if self.weight == "uniform":
+                pred = nearest_labels.mean()
+
+            elif self.weight == "rank":
+                ranks = 1 / np.arange(1, self.k + 1)
+                pred = np.sum(nearest_labels * ranks) / ranks.sum()
+
+            elif self.weight == "distance":
+                if np.any(nearest_dist == 0):
+                    pred = nearest_labels[nearest_dist == 0][0]
                 else:
-                    if distance < -heap[0][0]:
-                        heapq.heappop(heap)
-                        heapq.heappush(heap, (-distance, label))
-            predictions.append(self._predict_by_weight(heap))
+                    w = 1 / nearest_dist
+                    pred = np.sum(nearest_labels * w) / w.sum()
+
+            predictions.append(pred)
+
         return np.array(predictions)
 
     def _get_metric(self, X1: np.array, X2: np.array):
-        # Выбор метрики расстояния
         if self.metric == "euclidean":
-            return self._get_euclidean(X1, X2)
+            return np.sqrt(np.sum((X1 - X2) ** 2))
         if self.metric == "manhattan":
-            return self._get_manhattan(X1, X2)
+            return np.sum(np.abs(X1 - X2))
         if self.metric == "chebyshev":
-            return self._get_chebyshev(X1, X2)
+            return np.max(np.abs(X1 - X2))
         if self.metric == "cosine":
-            return self._get_cosine(X1, X2)
-
-    def _get_euclidean(self, X1: np.array, X2: np.array):
-        # Евклидово расстояние
-        return np.sum((X1 - X2) ** 2) ** 0.5
-
-    def _get_manhattan(self, X1: np.array, X2: np.array):
-        # Манхэттенское расстояние
-        return np.sum(abs(X1 - X2))
-
-    def _get_chebyshev(self, X1: np.array, X2: np.array):
-        # Расстояние Чебышева
-        return np.max(np.abs(X1 - X2))
+            return 1 - np.dot(X1, X2) / (np.linalg.norm(X1) * np.linalg.norm(X2))
 
     def _get_cosine(self, X1: np.array, X2: np.array):
         # Косинусное расстояние
